@@ -1,0 +1,122 @@
+# ============================================================
+# API Security Platform — Docker Compose Configuration
+# ============================================================
+# Starts all Phase 1 services: gateway, user-service, order-service,
+# Redis (rate limiting/cache), and MongoDB (persistent storage).
+#
+# Usage:
+#   docker-compose up --build        # Build and start all services
+#   docker-compose up --build -d     # Build and start in detached mode
+#   docker-compose down              # Stop and remove containers
+#   docker-compose logs -f gateway   # Follow gateway logs
+# ============================================================
+
+version: "3.8"
+
+services:
+  # ──────────────────────────────────────────────
+  # MongoDB — Persistent storage for request logs,
+  # blacklist/whitelist, API keys, and user data
+  # ──────────────────────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: api-security-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - api-security-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────
+  # Redis — In-memory store for rate limit counters,
+  # response caching, and fast IP lookups
+  # ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: api-security-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - api-security-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────
+  # API Gateway — Core security gateway with
+  # middleware chain (logging, IP filter, rate
+  # limiting, auth, AI placeholder, RBAC)
+  # ──────────────────────────────────────────────
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: api-security-gateway
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - api-security-net
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # User Service — Dummy backend providing fake
+  # user data (GET /api/users, GET /api/users/:id)
+  # ──────────────────────────────────────────────
+  user-service:
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    container_name: api-security-user-service
+    ports:
+      - "${USER_SERVICE_PORT:-4001}:4001"
+    environment:
+      - PORT=4001
+    networks:
+      - api-security-net
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # Order Service — Dummy backend providing fake
+  # order data (GET /api/orders, admin-only via
+  # gateway RBAC)
+  # ──────────────────────────────────────────────
+  order-service:
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    container_name: api-security-order-service
+    ports:
+      - "${ORDER_SERVICE_PORT:-4002}:4002"
+    environment:
+      - PORT=4002
+    networks:
+      - api-security-net
+    restart: unless-stopped
+
+# ──────────────────────────────────────────────
+# Shared network for inter-service communication
+# ──────────────────────────────────────────────
+networks:
+  api-security-net:
+    driver: bridge
+
+# ──────────────────────────────────────────────
+# Persistent volume for MongoDB data
+# ──────────────────────────────────────────────
+volumes:
+  mongodb_data:
